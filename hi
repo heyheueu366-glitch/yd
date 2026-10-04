@@ -1,4 +1,4 @@
-print("hello everyone")
+print("hie")
   -- RFX Steal An Eggs - Fixed & Cleaned
 local Players = game:GetService("Players")
 local ProximityPromptService = game:GetService("ProximityPromptService")
