@@ -1,0 +1,555 @@
+print("hello everyone")
+  -- RFX Steal An Eggs - Fixed & Cleaned
+local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local CurrentCamera = Workspace.CurrentCamera
+
+-- تحديد مجلد واجهة المستخدم (PlayerGui أو CoreGui)
+local TargetGui
+pcall(function()
+    TargetGui = CoreGui
+end)
+if not TargetGui or not pcall(function() return TargetGui.Name end) then
+    TargetGui = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- المتغيرات العامة والحالة
+local antiHitEnabled = true
+local activeConnections = setmetatable({}, { __mode = "k" })
+local eventConnections = {}
+local serverUrl = "http://darli.hidencloud.com:24590/"
+local userIdStr = tostring(LocalPlayer.UserId)
+
+-- إحداثيات الانتقال السريع (Anti-Hit Bypass)
+local teleportLocations = {
+    CFrame.new(4747.71, 70.57, -335.25),
+    CFrame.new(3520.94, 70.73, -343.74),
+    CFrame.new(2446.02, 70.88, -351.18),
+    CFrame.new(1352.11, 71.02, -358.75),
+    CFrame.new(544.49, 71.13, -364.34)
+}
+
+-- وظيفة حماية الشخصية عند تفعيل الـ Prompt (Desync / Anti-Hit)
+local function executeAntiHitBypass()
+    local Character = LocalPlayer.Character
+    if not Character then return end
+    
+    local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+    if not Humanoid or not HumanoidRootPart then return end
+
+    local originalHRPPos = HumanoidRootPart.CFrame
+    local originalCamCFrame = CurrentCamera.CFrame
+    local originalCamType = CurrentCamera.CameraType
+
+    local isArchivable = Character.Archivable
+    Character.Archivable = true
+    local clone = Character:Clone()
+    Character.Archivable = isArchivable
+
+    if clone then
+        for _, descendant in ipairs(clone:GetDescendants()) do
+            if descendant:IsA("BasePart") then
+                descendant.Anchored = true
+                descendant.CanCollide = false
+            elseif descendant:IsA("LocalScript") or descendant:IsA("Script") then
+                descendant:Destroy()
+            end
+        end
+        clone.Parent = Workspace
+    end
+
+    CurrentCamera.CameraType = Enum.CameraType.Scriptable
+    CurrentCamera.CFrame = originalCamCFrame
+    Humanoid.BreakJointsOnDeath = false
+
+    local savedStates = {}
+    for _, descendant in ipairs(Character:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            savedStates[descendant] = { LTM = descendant.LocalTransparencyModifier }
+            descendant.LocalTransparencyModifier = 1
+        elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
+            savedStates[descendant] = { T = descendant.Transparency }
+            descendant.Transparency = 1
+        elseif descendant:IsA("Trail") or descendant:IsA("ParticleEmitter") or descendant:IsA("Beam") 
+            or descendant:IsA("Highlight") or descendant:IsA("Light") 
+            or descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui") then
+            savedStates[descendant] = { E = descendant.Enabled }
+            descendant.Enabled = false
+        elseif descendant:IsA("Motor6D") then
+            descendant.Enabled = true
+        end
+    end
+
+    for _, cf in ipairs(teleportLocations) do
+        Humanoid.PlatformStand = true
+        Humanoid.Health = 100
+        HumanoidRootPart.CFrame = cf
+        CurrentCamera.CFrame = originalCamCFrame
+        task.wait(0.02)
+    end
+
+    for _ = 1, 15 do
+        Humanoid.Health = 100
+        Humanoid.PlatformStand = true
+        HumanoidRootPart.CFrame = teleportLocations[#teleportLocations]
+        CurrentCamera.CFrame = originalCamCFrame
+        task.wait(0.01)
+    end
+
+    HumanoidRootPart.CFrame = originalHRPPos
+    Humanoid.PlatformStand = false
+
+    for item, state in pairs(savedStates) do
+        if item and item.Parent then
+            if state.LTM then item.LocalTransparencyModifier = state.LTM end
+            if state.T then item.Transparency = state.T end
+            if state.E ~= nil then item.Enabled = state.E end
+        end
+    end
+
+    if clone then clone:Destroy() end
+    CurrentCamera.CameraType = originalCamType
+end
+
+local function cleanupConnections()
+    for prompt, conns in pairs(activeConnections) do
+        if not prompt or not prompt.Parent then
+            if conns then
+                for _, conn in ipairs(conns) do
+                    if conn then conn:Disconnect() end
+                end
+            end
+            activeConnections[prompt] = nil
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(30) do
+        cleanupConnections()
+    end
+end)
+
+local function setupPrompt(prompt)
+    if not prompt or typeof(prompt) ~= "Instance" or not prompt:IsA("ProximityPrompt") then
+        return
+    end
+
+    prompt.HoldDuration = 0
+
+    if not activeConnections[prompt] then
+        local holdConn = prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
+            if antiHitEnabled and prompt and prompt.Parent and prompt.HoldDuration > 0 then
+                prompt.HoldDuration = 0
+            end
+        end)
+        
+        local destroyConn = prompt.Destroying:Connect(function()
+            if activeConnections[prompt] then
+                for _, conn in ipairs(activeConnections[prompt]) do
+                    if conn then conn:Disconnect() end
+                end
+                activeConnections[prompt] = nil
+            end
+        end)
+
+        activeConnections[prompt] = { holdConn, destroyConn }
+    end
+end
+
+local function copyToClipboard(text, parentFrame)
+    pcall(function()
+        if setclipboard then setclipboard(text)
+        elseif toclipboard then toclipboard(text) end
+    end)
+
+    if parentFrame then
+        local TextBox = Instance.new("TextBox")
+        TextBox.Size = UDim2.new(1, 0, 0, 20)
+        TextBox.Position = UDim2.new(0, 0, 1, 5)
+        TextBox.Text = text
+        TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TextBox.BackgroundColor3 = Color3.fromRGB(20, 30, 50)
+        TextBox.BorderSizePixel = 0
+        TextBox.ClearTextOnFocus = false
+        TextBox.ZIndex = 10
+        TextBox.Parent = parentFrame
+        TextBox:CaptureFocus()
+        TextBox.SelectionStart = 1
+        TextBox.CursorPosition = #text + 1
+
+        task.delay(5, function()
+            if TextBox and TextBox.Parent then
+                TextBox:Destroy()
+            end
+        end)
+    end
+end
+
+-- بناء واجهة المستخدم (GUI) - أزرق + حواف رينبو
+if TargetGui:FindFirstChild("RFX_StealAnEggs") then
+    TargetGui.RFX_StealAnEggs:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RFX_StealAnEggs"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = TargetGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 220, 0, 160)
+MainFrame.Position = UDim2.new(0.5, -110, 0.4, -80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 25, 55)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.ZIndex = 2
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 8)
+MainCorner.Parent = MainFrame
+
+-- حواف رينبو
+local RainbowStroke = Instance.new("UIStroke")
+RainbowStroke.Thickness = 2.5
+RainbowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+RainbowStroke.Parent = MainFrame
+
+task.spawn(function()
+    local hue = 0
+    while RainbowStroke and RainbowStroke.Parent do
+        hue = (hue + 0.008) % 1
+        RainbowStroke.Color = Color3.fromHSV(hue, 1, 1)
+        task.wait(0.03)
+    end
+end)
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -45, 0, 24)
+TitleLabel.Position = UDim2.new(0, 12, 0, 8)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "RFX Steal An Eggs"
+TitleLabel.TextColor3 = Color3.fromRGB(120, 180, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 13
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.ZIndex = 3
+TitleLabel.Parent = MainFrame
+
+local DiscordBtn = Instance.new("ImageButton")
+DiscordBtn.Size = UDim2.new(0, 24, 0, 24)
+DiscordBtn.Position = UDim2.new(1, -30, 0, 8)
+DiscordBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 220)
+DiscordBtn.Image = "rbxassetid://93628638506572"
+DiscordBtn.ScaleType = Enum.ScaleType.Fit
+DiscordBtn.ZIndex = 3
+DiscordBtn.Parent = MainFrame
+
+local DiscordCorner = Instance.new("UICorner")
+DiscordCorner.CornerRadius = UDim.new(0, 4)
+DiscordCorner.Parent = DiscordBtn
+
+local DiscordStroke = Instance.new("UIStroke")
+DiscordStroke.Thickness = 1.5
+DiscordStroke.Color = Color3.fromRGB(80, 160, 255)
+DiscordStroke.Parent = DiscordBtn
+
+DiscordBtn.MouseButton1Click:Connect(function()
+    copyToClipboard("https://discord.gg/JF6E4Jjvd", MainFrame)
+end)
+
+local ToggleAntiHitBtn = Instance.new("TextButton")
+ToggleAntiHitBtn.Size = UDim2.new(1, -24, 0, 32)
+ToggleAntiHitBtn.Position = UDim2.new(0, 12, 0, 38)
+ToggleAntiHitBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
+ToggleAntiHitBtn.Text = ""
+ToggleAntiHitBtn.AutoButtonColor = false
+ToggleAntiHitBtn.ZIndex = 3
+ToggleAntiHitBtn.Parent = MainFrame
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 5)
+ToggleCorner.Parent = ToggleAntiHitBtn
+
+local ToggleStroke = Instance.new("UIStroke")
+ToggleStroke.Thickness = 1.5
+ToggleStroke.Color = Color3.fromRGB(60, 200, 120)
+ToggleStroke.Parent = ToggleAntiHitBtn
+
+local AntiHitText = Instance.new("TextLabel")
+AntiHitText.Size = UDim2.new(1, 0, 1, 0)
+AntiHitText.BackgroundTransparency = 1
+AntiHitText.Text = "ANTI HIT - ON"
+AntiHitText.TextColor3 = Color3.fromRGB(255, 255, 255)
+AntiHitText.Font = Enum.Font.GothamBold
+AntiHitText.TextSize = 13
+AntiHitText.ZIndex = 4
+AntiHitText.Parent = ToggleAntiHitBtn
+
+local UpBtn = Instance.new("TextButton")
+UpBtn.Size = UDim2.new(0.5, -16, 0, 32)
+UpBtn.Position = UDim2.new(0, 12, 0, 78)
+UpBtn.BackgroundColor3 = Color3.fromRGB(25, 50, 100)
+UpBtn.Text = "UP"
+UpBtn.TextColor3 = Color3.fromRGB(180, 210, 255)
+UpBtn.Font = Enum.Font.GothamBold
+UpBtn.TextSize = 13
+UpBtn.ZIndex = 3
+UpBtn.Parent = MainFrame
+
+local UpCorner = Instance.new("UICorner")
+UpCorner.CornerRadius = UDim.new(0, 5)
+UpCorner.Parent = UpBtn
+
+local UpStroke = Instance.new("UIStroke")
+UpStroke.Thickness = 1.2
+UpStroke.Color = Color3.fromRGB(70, 140, 255)
+UpStroke.Parent = UpBtn
+
+local DownBtn = Instance.new("TextButton")
+DownBtn.Size = UDim2.new(0.5, -16, 0, 32)
+DownBtn.Position = UDim2.new(0.5, 4, 0, 78)
+DownBtn.BackgroundColor3 = Color3.fromRGB(25, 50, 100)
+DownBtn.Text = "DOWN"
+DownBtn.TextColor3 = Color3.fromRGB(180, 210, 255)
+DownBtn.Font = Enum.Font.GothamBold
+DownBtn.TextSize = 13
+DownBtn.ZIndex = 3
+DownBtn.Parent = MainFrame
+
+local DownCorner = Instance.new("UICorner")
+DownCorner.CornerRadius = UDim.new(0, 5)
+DownCorner.Parent = DownBtn
+
+local DownStroke = Instance.new("UIStroke")
+DownStroke.Thickness = 1.2
+DownStroke.Color = Color3.fromRGB(70, 140, 255)
+DownStroke.Parent = DownBtn
+
+local StatusFrame = Instance.new("Frame")
+StatusFrame.Size = UDim2.new(1, -24, 0, 30)
+StatusFrame.Position = UDim2.new(0, 12, 0, 118)
+StatusFrame.BackgroundColor3 = Color3.fromRGB(18, 35, 70)
+StatusFrame.BorderSizePixel = 0
+StatusFrame.ZIndex = 3
+StatusFrame.Parent = MainFrame
+
+local StatusCorner = Instance.new("UICorner")
+StatusCorner.CornerRadius = UDim.new(0, 5)
+StatusCorner.Parent = StatusFrame
+
+local StatusStroke = Instance.new("UIStroke")
+StatusStroke.Thickness = 1
+StatusStroke.Color = Color3.fromRGB(50, 110, 200)
+StatusStroke.Parent = StatusFrame
+
+local OnlineLabel = Instance.new("TextLabel")
+OnlineLabel.Size = UDim2.new(1, 0, 1, 0)
+OnlineLabel.BackgroundTransparency = 1
+OnlineLabel.Text = "👥 Players Online: ..."
+OnlineLabel.TextColor3 = Color3.fromRGB(160, 200, 255)
+OnlineLabel.Font = Enum.Font.Code
+OnlineLabel.TextSize = 12
+OnlineLabel.ZIndex = 4
+OnlineLabel.Parent = StatusFrame
+
+local function httpGet(url)
+    local ok, result = pcall(function()
+        if game and game.HttpGet then
+            return game:HttpGet(url)
+        elseif request then
+            local res = request({ Url = url, Method = "GET" })
+            return res and res.Body
+        elseif http_request then
+            local res = http_request({ Url = url, Method = "GET" })
+            return res and res.Body
+        end
+    end)
+    return ok and result or nil
+end
+
+task.spawn(function()
+    while task.wait(5) do
+        local response = httpGet(serverUrl .. "?id=" .. userIdStr)
+        if response then
+            local count = response:match("<div class=\"num\">%s*(%d+)%s*</div>")
+            if count then
+                OnlineLabel.Text = "👥 Players Online: " .. count
+            end
+        end
+    end
+end)
+
+-- منصة الطيران/الارتفاع (ثابتة - ترفع وتوقف / تنزل وتوقف)
+local isPlatformActive = false
+local floorPart = nil
+local renderConnection = nil
+local platformY = 0
+local heightStep = 4
+local baseLift = 6
+local liftCount = 0  -- عدد مرات الرفع
+
+local function getHRP()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function createPlatform(y)
+    if floorPart and floorPart.Parent then
+        pcall(function() floorPart:Destroy() end)
+    end
+    floorPart = Instance.new("Part")
+    floorPart.Name = "RFX_FloorPart"
+    floorPart.Size = Vector3.new(12, 1, 12)
+    floorPart.Anchored = true
+    floorPart.CanCollide = true
+    floorPart.Transparency = 1
+    floorPart.Parent = Workspace
+
+    local hrp = getHRP()
+    local x = hrp and hrp.Position.X or 0
+    local z = hrp and hrp.Position.Z or 0
+    floorPart.CFrame = CFrame.new(x, y - 3.2, z)
+end
+
+local function removePlatform()
+    isPlatformActive = false
+    platformY = 0
+    liftCount = 0
+    if floorPart then
+        pcall(function() floorPart:Destroy() end)
+        floorPart = nil
+    end
+    if renderConnection then
+        renderConnection:Disconnect()
+        renderConnection = nil
+    end
+end
+
+-- المنصة تتبع X/Z فقط، الـ Y ثابت (ما يسحب اللاعب)
+local function updatePlatformPosition()
+    if not isPlatformActive or not floorPart or not floorPart.Parent then return end
+    local hrp = getHRP()
+    if not hrp then return end
+
+    floorPart.CFrame = CFrame.new(hrp.Position.X, platformY - 3.2, hrp.Position.Z)
+
+    -- منع السقوط/السحب العمودي
+    local vel = hrp.AssemblyLinearVelocity
+    if math.abs(vel.Y) > 1.5 then
+        hrp.AssemblyLinearVelocity = Vector3.new(vel.X, 0, vel.Z)
+    end
+end
+
+local function setPlayerHeight(newY)
+    local hrp = getHRP()
+    if not hrp then return end
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    hrp.CFrame = CFrame.new(hrp.Position.X, newY, hrp.Position.Z)
+    platformY = newY
+
+    if floorPart and floorPart.Parent then
+        floorPart.CFrame = CFrame.new(hrp.Position.X, newY - 3.2, hrp.Position.Z)
+    end
+end
+
+UpBtn.MouseButton1Click:Connect(function()
+    local hrp = getHRP()
+    if not hrp then return end
+
+    if not isPlatformActive then
+        isPlatformActive = true
+        liftCount = 1
+        local newY = hrp.Position.Y + baseLift
+        createPlatform(newY)
+        setPlayerHeight(newY)
+        if not renderConnection then
+            renderConnection = RunService.Heartbeat:Connect(updatePlatformPosition)
+        end
+    else
+        liftCount = liftCount + 1
+        setPlayerHeight(platformY + heightStep)
+    end
+end)
+
+DownBtn.MouseButton1Click:Connect(function()
+    if not isPlatformActive then return end
+
+    local hrp = getHRP()
+    if not hrp then return end
+
+    liftCount = liftCount - 1
+
+    if liftCount <= 0 then
+        -- رجع للأرض وشيل المنصة
+        removePlatform()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        return
+    end
+
+    -- نزل خطوة واحدة ووقف
+    setPlayerHeight(platformY - heightStep)
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    if isPlatformActive then
+        removePlatform()
+    end
+end)
+
+local function setAntiHitState(enabled)
+    antiHitEnabled = enabled
+
+    if antiHitEnabled then
+        ToggleAntiHitBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
+        AntiHitText.Text = "ANTI HIT - ON"
+        ToggleStroke.Color = Color3.fromRGB(60, 200, 120)
+
+        for _, descendant in ipairs(Workspace:GetDescendants()) do
+            setupPrompt(descendant)
+        end
+
+        if #eventConnections == 0 then
+            table.insert(eventConnections, Workspace.DescendantAdded:Connect(function(descendant)
+                if antiHitEnabled then setupPrompt(descendant) end
+            end))
+            
+            table.insert(eventConnections, ProximityPromptService.PromptShown:Connect(function(prompt)
+                if antiHitEnabled then setupPrompt(prompt) end
+            end))
+            
+            table.insert(eventConnections, ProximityPromptService.PromptTriggered:Connect(function(_, player)
+                if antiHitEnabled and player == LocalPlayer then
+                    executeAntiHitBypass()
+                end
+            end))
+        end
+    else
+        ToggleAntiHitBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+        AntiHitText.Text = "ANTI HIT - OFF"
+        ToggleStroke.Color = Color3.fromRGB(220, 80, 80)
+
+        for _, conn in ipairs(eventConnections) do
+            if conn then conn:Disconnect() end
+        end
+        eventConnections = {}
+    end
+end
+
+ToggleAntiHitBtn.MouseButton1Click:Connect(function()
+    setAntiHitState(not antiHitEnabled)
+end)
+
+setAntiHitState(true)
+
+print("RFX Steal An Eggs loaded | Discord: https://discord.gg/JF6E4Jjvd")
